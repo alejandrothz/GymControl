@@ -8,3 +8,6 @@ __pycache__/
 # Variables de entorno y secretos
 .env
 .env.*
+
+# Paquetes generados para desplegar Lambda
+*.zip
