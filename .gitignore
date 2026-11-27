@@ -11,3 +11,10 @@ __pycache__/
 
 # Paquetes generados para desplegar Lambda
 *.zip
+
+# Dependencias y archivos generados del frontend
+frontend/node_modules/
+frontend/dist/
+
+# Configuración local de VS Code
+.vscode/

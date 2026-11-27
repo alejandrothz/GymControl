@@ -42,8 +42,11 @@ def lambda_handler(event, context):
     # Obtener los miembros registrados en DynamoDB
     miembros = obtener_miembros()
 
-    # obtener el texto de busqueda enviado a lambda
-    busqueda = event.get("busqueda", "")
+    # Obtener la busqueda desde API gateway o desde una prueba directa de Lambda
+    parametros = event.get("queryStringParameters") or {}
+
+    #extraer la busqueda desde api gateway o una prueba directa
+    busqueda = parametros.get("busqueda", event.get("busqueda", ""))
 
     # validar que la busqueda sea texto
     if not isinstance(busqueda, str):
