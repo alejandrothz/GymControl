@@ -1,57 +1,71 @@
+
+# Registrar miembros en DynamoDB sin activar su membresía
 import json
 import uuid
 import boto3
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-# preparar el acceso a DynamoDB
+# Conexión con DynamoDB en AWS Ohio
 dynamodb = boto3.resource("dynamodb", region_name="us-east-2")
 tabla = dynamodb.Table("Members")
 
+
 def lambda_handler(event, context):
 
-    # Obtener los datos enviados por el recepcionista
-    nombre = event.get("nombre", "")
-    telefono = event.get("telefono", "")
+    # Obtener los datos enviados por API Gateway
+    try:
+        if "body" in event:
+            datos = json.loads(event["body"] or "{}")
+        else:
+            datos = event
 
-    #validar que nombre no este vacio
-    if not nombre.strip():
+        if not isinstance(datos, dict):
+            raise ValueError("JSON invalido")
+
+    except (json.JSONDecodeError, ValueError, TypeError):
         return {
             "statusCode": 400,
-            "body": json.dumps({
-                "error": "El nombre no puede estar vacio"
-            })
+            "body": json.dumps({"error": "JSON invalido"})
         }
-    # generar un identificador único para el miebmro
+
+    # Validar los datos del nuevo miembro
+    nombre = datos.get("nombre", "")
+    telefono = datos.get("telefono", "")
+
+    if not isinstance(nombre, str) or not nombre.strip():
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "El nombre es obligatorio"})
+        }
+
+    if not isinstance(telefono, str):
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Telefono invalido"})
+        }
+
+    # Generar identificador y fecha de registro
     member_id = str(uuid.uuid4())
+    fecha_registro = datetime.now(timezone.utc).isoformat()
 
-    # obtener fecha y hora actual en UTC
-    ahora = datetime.now(timezone.utc)
-    fecha_registro = ahora.isoformat()
-
-    # Calcular el periodo inicial de membresia (30 días a partir de la fecha de registro)
-    inicio_membresia = ahora.date()
-    fin_membresia = inicio_membresia + timedelta(days=29)
-
-    # guardar el miembro en la tabla de dynamodb
+    # Registrar miembro sin periodo de membresia
     tabla.put_item(
-        Item = {
+        Item={
             "memberId": member_id,
-            "fullName": nombre,
-            "phone": telefono,
+            "fullName": nombre.strip(),
+            "phone": telefono.strip(),
             "isActive": True,
-            "registeredAt": fecha_registro,
-            "membershipStartDate": inicio_membresia.isoformat(),
-            "membershipEndDate": fin_membresia.isoformat()
+            "registeredAt": fecha_registro
         },
-        #evita sobreescribir un mbiembro existente
         ConditionExpression="attribute_not_exists(memberId)"
     )
-    
+
+    # Confirmar el registro
     return {
-        "statusCode": 200,
+        "statusCode": 201,
         "body": json.dumps({
-            "member_Id": member_id,
-            "mensaje": "Miembro registrado exitosamente"
+            "memberId": member_id,
+            "mensaje": "Miembro registrado correctamente"
         })
     }

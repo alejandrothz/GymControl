@@ -1,17 +1,16 @@
 
 import * as React from "react"
 
-// Iconos para la navegación de GymControl
+// Iconos de GymControl
 import {
   DumbbellIcon,
   LayoutDashboardIcon,
   UsersIcon,
   CreditCardIcon,
   ChartBarIcon,
-  Settings2Icon,
 } from "lucide-react"
 
-// Componentes de navegación de la plantilla
+// Componentes de la plantilla shadcn/ui
 import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 
@@ -25,7 +24,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 
-// Configuración temporal del menú y usuario de ejemplo
+// Configuración del menú y usuario provisional
 const data = {
   user: {
     name: "GymControl",
@@ -33,42 +32,42 @@ const data = {
     avatar: "",
   },
 
-  // Secciones principales del sistema
+  // Rutas de navegación de GymControl
   navMain: [
     {
       title: "Inicio",
-      url: "#",
+      url: "#inicio",
       icon: <LayoutDashboardIcon />,
     },
     {
       title: "Miembros",
-      url: "#",
+      url: "#miembros",
       icon: <UsersIcon />,
     },
     {
       title: "Pagos",
-      url: "#",
+      url: "#pagos",
       icon: <CreditCardIcon />,
     },
     {
       title: "Ingresos",
-      url: "#",
+      url: "#ingresos",
       icon: <ChartBarIcon />,
     },
   ],
 }
 
-// Menú lateral principal de GymControl
+// Menú lateral principal
 export function AppSidebar({ ...props }) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
-      {/* Encabezado del menú */}
+      {/* Encabezado de GymControl */}
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               className="data-[slot=sidebar-menu-button]:p-1.5!"
-              render={<a href="#" />}
+              render={<a href="#inicio" />}
             >
               <DumbbellIcon className="size-5!" />
               <span className="text-base font-semibold">
@@ -79,12 +78,12 @@ export function AppSidebar({ ...props }) {
         </SidebarMenu>
       </SidebarHeader>
 
-      {/* Opciones de navegación */}
+      {/* Navegación principal */}
       <SidebarContent>
         <NavMain items={data.navMain} />
       </SidebarContent>
 
-      {/* Usuario de ejemplo; después lo conectaremos con Cognito */}
+      {/* Usuario provisional */}
       <SidebarFooter>
         <NavUser user={data.user} />
       </SidebarFooter>

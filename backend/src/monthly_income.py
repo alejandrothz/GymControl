@@ -1,87 +1,119 @@
-# Importar las herramienas para consultar DynamoDB
+
+# Consultar ingresos mensuales: acceso exclusivo para Gerente
+import json
+import re
 import boto3
+
+from datetime import datetime
 from boto3.dynamodb.conditions import Key
 
-# herramienta para validar fechas
-from datetime import datetime
-
-# conectar con DynamoDB en la region Ohio
-dynamodb = boto3.resource(
-    "dynamodb",
-    region_name = "us-east-2"
-)
-
-# seleccionar la tabla de pagos
+# Conexión con DynamoDB en AWS Ohio
+dynamodb = boto3.resource("dynamodb", region_name="us-east-2")
 tabla_pagos = dynamodb.Table("Payments")
 
-# calcular los ingresos totales a partir de una lista de pagos
-def calcular_ingresos(pagos):
-    total = 0
 
-    # recorrer cada pago y acumular su importe en centavos
-    for pago in pagos:
-        total += pago ["amountInCents"]
+# Crear respuestas HTTP para API Gateway
+def respuesta_http(codigo, contenido):
+    return {
+        "statusCode": codigo,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(contenido)
+    }
 
-    return total
 
-# Consultar los pagos de un mes utilizando el indice PaymentMonthIndex usando paginacion
-def obtener_pagos_mes(mes):
-    respuesta = tabla_pagos.query(
-        IndexName = "PaymentMonthIndex",
-        KeyConditionExpression = Key("paymentMonth").eq(mes)
+# Comprobar los grupos autenticados por Cognito
+def es_gerente(event):
+    claims = (
+        event.get("requestContext", {})
+        .get("authorizer", {})
+        .get("jwt", {})
+        .get("claims", {})
     )
 
-    # Devolver los pagos encontrados
-    return respuesta.get("Items",[])
+    grupos = claims.get("cognito:groups", [])
 
-# Obtener los ingresos totales de un mes
-def obtener_ingresos_mesuales(mes):
+    # Los grupos pueden llegar como lista o texto
+    if isinstance(grupos, str):
+        try:
+            grupos = json.loads(grupos)
+        except json.JSONDecodeError:
+            grupos = grupos.strip("[]").split(",")
 
-    # consultar los pagos del mes mediante gsi
-    pagos = obtener_pagos_mes(mes)
+    if not isinstance(grupos, list):
+        return False
 
-    # Calcular el improte toal en centavos
-    total = calcular_ingresos(pagos)
+    return "Gerente" in [
+        grupo.strip().strip('"').strip("'")
+        for grupo in grupos
+        if isinstance(grupo, str)
+    ]
 
-    # Devolver el resumen mensual
+
+# Consultar todos los pagos de un mes mediante el GSI
+def obtener_ingresos_mensuales(mes):
+    total = 0
+    cantidad_pagos = 0
+
+    parametros = {
+        "IndexName": "PaymentMonthIndex",
+        "KeyConditionExpression": Key("paymentMonth").eq(mes),
+        "ProjectionExpression": "amountInCents"
+    }
+
+    while True:
+        respuesta = tabla_pagos.query(**parametros)
+
+        for pago in respuesta.get("Items", []):
+            total += int(pago["amountInCents"])
+            cantidad_pagos += 1
+
+        # Continuar si DynamoDB tiene más resultados
+        ultima_clave = respuesta.get("LastEvaluatedKey")
+
+        if not ultima_clave:
+            break
+
+        parametros["ExclusiveStartKey"] = ultima_clave
+
     return {
         "mes": mes,
-        "cantidadPagos": len(pagos),
+        "cantidadPagos": cantidad_pagos,
         "totalInCents": total
     }
 
-# punto de enrada de aws lambda para consultar ingresos mensuales
+
+# Función principal de AWS Lambda
 def lambda_handler(event, context):
 
-    # Obtener el mes soliciado
-    mes = event.get("mes")
+    # Verificar autorización antes de consultar DynamoDB
+    if not es_gerente(event):
+        return respuesta_http(
+            403,
+            {"error": "Acceso exclusivo para gerentes"}
+        )
 
-    # comprobar que el mes sea texto
-    if not isinstance(mes, str):
-        return {
-            "statusCode": 400,
-            "body": "El mes debe tener el formato YYYY-MM"
-        }
+    # Obtener el mes desde la URL de API Gateway
+    parametros = event.get("queryStringParameters") or {}
+    mes = parametros.get("mes")
 
-    # Validar que el anio y el mes sean correctos
+    # Validar el formato YYYY-MM
+    if not isinstance(mes, str) or not re.fullmatch(
+        r"\d{4}-(0[1-9]|1[0-2])", mes
+    ):
+        return respuesta_http(
+            400,
+            {"error": "El mes debe tener formato YYYY-MM"}
+        )
+
     try:
-        # Convertir el mes recibido a un objeto de fecha
-        fecha = datetime.strptime(mes, "%Y-%m")
-
-        if fecha.strftime("%Y-%m") != mes:
-            raise ValueError("Formato incorrecto")
-
+        datetime.strptime(mes, "%Y-%m")
     except ValueError:
-        return {
-            "statusCode": 400,
-            "body": "El mes debe tener el formato YYYY-mm"
-        }
+        return respuesta_http(
+            400,
+            {"error": "Mes invalido"}
+        )
 
-    # consultar pagos y calcular los ingresos del mes
-    resultado = obtener_ingresos_mesuales(mes)
+    # Consultar ingresos mediante PaymentMonthIndex
+    resultado = obtener_ingresos_mensuales(mes)
 
-    # devolver el resulmen mensual
-    return {
-        "statusCode": 200,
-        "body": resultado
-    }
+    return respuesta_http(200, resultado)
