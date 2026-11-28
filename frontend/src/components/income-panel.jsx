@@ -91,8 +91,18 @@ export function IncomePanel() {
         return obtenerIngresosMensuales(`${anioNumero}-${mesNumero}`)
       })
 
-      // Obtener los 12 resultados desde API Gateway
-      const resultados = await Promise.all(consultas)
+      
+      // Consultar los meses uno por uno para evitar sobrecargar la API
+      const resultados = []
+
+      for (const nombre of MESES) {
+        const mesNumero = String(resultados.length + 1).padStart(2, "0")
+        const mesConsulta = `${anioNumero}-${mesNumero}`
+
+        const resultado = await obtenerIngresosMensuales(mesConsulta)
+        resultados.push(resultado)
+      }
+
 
       const resumen = resultados.map((resultado, indice) => ({
         mes: MESES[indice],

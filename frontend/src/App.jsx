@@ -2,23 +2,33 @@
 import { useEffect, useState } from "react"
 import { fetchAuthSession } from "aws-amplify/auth"
 
-// Funciones para consultar y registrar miembros en AWS
+// Operaciones de AWS
 import { obtenerMiembros, registrarMiembro } from "./api"
 
-// Componentes del dashboard GymControl
+// Cálculo automático del estado de membresía
+import { obtenerEstadoMembresia } from "@/lib/membership-status"
+
+// Componentes de GymControl
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
 import { PaymentsPanel } from "@/components/payments-panel"
 import { IncomePanel } from "@/components/income-panel"
+import { PricingPanel } from "@/components/pricing-panel"
+import { EditMemberForm } from "@/components/edit-member-form"
 
-// Componentes visuales de shadcn/ui
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+// Componentes de shadcn/ui
+import {
+  SidebarInset,
+  SidebarProvider,
+} from "@/components/ui/sidebar"
+
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,13 +36,13 @@ import { Button } from "@/components/ui/button"
 // Secciones disponibles en GymControl
 const secciones = ["inicio", "miembros", "pagos", "ingresos"]
 
-// Obtener la sección desde la URL
+// Obtener sección actual desde la URL
 function obtenerSeccion() {
   const seccion = window.location.hash.replace("#", "")
   return secciones.includes(seccion) ? seccion : "inicio"
 }
 
-// Formatear fechas de DynamoDB
+// Mostrar fechas en formato DD/MM/YYYY
 function mostrarFecha(fecha) {
   if (!fecha) return "Sin fecha"
 
@@ -40,21 +50,35 @@ function mostrarFecha(fecha) {
   return `${dia}/${mes}/${anio}`
 }
 
+// Mostrar el estado automático de la membresía
+function EstadoMembresia({ miembro }) {
+  const estado = obtenerEstadoMembresia(miembro)
+
+  const variantes = {
+    "Sin membresía": "outline",
+    "Vigente": "default",
+    "Vencida": "secondary",
+    "Inactivo": "destructive",
+  }
+
+  return (
+    <Badge variant={variantes[estado]}>
+      {estado}
+    </Badge>
+  )
+}
+
 // Componente principal de GymControl
 function App() {
-  // Estados de navegación
+  // Navegación y datos de AWS
   const [seccion, setSeccion] = useState(obtenerSeccion)
-
-  // Estados de miembros y conexión con AWS
   const [miembros, setMiembros] = useState([])
   const [busqueda, setBusqueda] = useState("")
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState("")
-
-  // Permisos del usuario autenticado
   const [esGerente, setEsGerente] = useState(false)
 
-  // Estados del formulario de miembros
+  // Registro de nuevos miembros
   const [mostrarFormulario, setMostrarFormulario] = useState(false)
   const [nombreNuevo, setNombreNuevo] = useState("")
   const [telefonoNuevo, setTelefonoNuevo] = useState("")
@@ -62,7 +86,10 @@ function App() {
   const [errorRegistro, setErrorRegistro] = useState("")
   const [mensajeRegistro, setMensajeRegistro] = useState("")
 
-  // Cargar miembros y comprobar el grupo de Cognito
+  // Edición de miembros existentes
+  const [miembroEditar, setMiembroEditar] = useState(null)
+
+  // Consultar miembros y permisos del usuario en AWS
   useEffect(() => {
     async function cargarDatos() {
       try {
@@ -71,10 +98,10 @@ function App() {
           fetchAuthSession(),
         ])
 
-        // Guardar miembros obtenidos de DynamoDB
+        // Guardar miembros recibidos de DynamoDB
         setMiembros(datos)
 
-        // Revisar los grupos del usuario autenticado
+        // Identificar el grupo de Cognito
         const grupos =
           sesion.tokens?.accessToken?.payload?.["cognito:groups"] || []
 
@@ -91,7 +118,7 @@ function App() {
     cargarDatos()
   }, [])
 
-  // Detectar los cambios de sección desde el menú lateral
+  // Cambiar de pantalla usando el menú lateral
   useEffect(() => {
     function actualizarSeccion() {
       setSeccion(obtenerSeccion())
@@ -104,7 +131,7 @@ function App() {
     }
   }, [])
 
-  // Registrar un nuevo miembro mediante API Gateway
+  // Registrar un nuevo miembro en DynamoDB
   async function guardarMiembro(evento) {
     evento.preventDefault()
 
@@ -113,17 +140,16 @@ function App() {
     setMensajeRegistro("")
 
     try {
-      // Registrar el miembro en DynamoDB
       await registrarMiembro(
         nombreNuevo.trim(),
         telefonoNuevo.trim()
       )
 
-      // Actualizar la lista después del registro
-      const datosActualizados = await obtenerMiembros()
-      setMiembros(datosActualizados)
+      // Recargar miembros desde AWS
+      const datos = await obtenerMiembros()
+      setMiembros(datos)
 
-      // Limpiar el formulario
+      // Limpiar formulario
       setNombreNuevo("")
       setTelefonoNuevo("")
       setMostrarFormulario(false)
@@ -136,52 +162,34 @@ function App() {
     }
   }
 
-  // Obtener fecha local en formato YYYY-MM-DD
-  const fechaActual = new Date()
+  // Estadísticas calculadas con los cuatro estados
+  const estadisticas = {
+    "Sin membresía": 0,
+    "Vigente": 0,
+    "Vencida": 0,
+    "Inactivo": 0,
+  }
 
-  const hoy = [
-    fechaActual.getFullYear(),
-    String(fechaActual.getMonth() + 1).padStart(2, "0"),
-    String(fechaActual.getDate()).padStart(2, "0"),
-  ].join("-")
-
-  // Calcular estadísticas con miembros reales
-  const activos = miembros.filter(
-    (m) => m.isActive === true
-  ).length
-
-  const vigentes = miembros.filter(
-    (m) =>
-      m.isActive === true &&
-      m.membershipStartDate &&
-      m.membershipEndDate &&
-      m.membershipStartDate <= hoy &&
-      m.membershipEndDate >= hoy
-  ).length
-
-  const vencidos = miembros.filter(
-    (m) =>
-      m.isActive === true &&
-      m.membershipEndDate &&
-      m.membershipEndDate < hoy
-  ).length
+  miembros.forEach((miembro) => {
+    const estado = obtenerEstadoMembresia(miembro)
+    estadisticas[estado]++
+  })
 
   // Buscar miembros por nombre o teléfono
-  const miembrosFiltrados = miembros.filter((m) => {
+  const miembrosFiltrados = miembros.filter((miembro) => {
     const texto = busqueda.trim().toLowerCase()
 
     return (
-      (m.fullName || "").toLowerCase().includes(texto) ||
-      (m.phone || "").includes(texto)
+      (miembro.fullName || "").toLowerCase().includes(texto) ||
+      (miembro.phone || "").includes(texto)
     )
   })
 
   return (
     <SidebarProvider>
-      {/* Menú lateral de GymControl */}
+      {/* Menú lateral */}
       <AppSidebar />
 
-      {/* Contenido principal */}
       <SidebarInset>
         <SiteHeader />
 
@@ -197,9 +205,11 @@ function App() {
             </p>
           </div>
 
-          {/* Estado de conexión con AWS */}
+          {/* Estado de conexión */}
           {cargando && (
-            <p className="text-sm">Consultando AWS...</p>
+            <p className="text-sm">
+              Consultando AWS...
+            </p>
           )}
 
           {error && (
@@ -208,169 +218,197 @@ function App() {
             </p>
           )}
 
-          {/* INICIO: estadísticas reales */}
+          {/* INICIO: estadísticas de membresías */}
           {seccion === "inicio" && !cargando && !error && (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-              {[
-                ["Total de miembros", miembros.length],
-                ["Miembros activos", activos],
-                ["Membresías vigentes", vigentes],
-                ["Membresías vencidas", vencidos],
-              ].map(([titulo, valor]) => (
-                <Card key={titulo}>
-                  <CardHeader>
-                    <CardTitle className="text-sm font-medium">
-                      {titulo}
-                    </CardTitle>
-                  </CardHeader>
+            <div className="space-y-5">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {[
+                  ["Sin membresía", estadisticas["Sin membresía"]],
+                  ["Vigentes", estadisticas["Vigente"]],
+                  ["Vencidas", estadisticas["Vencida"]],
+                  ["Inactivos", estadisticas["Inactivo"]],
+                ].map(([titulo, valor]) => (
+                  <Card key={titulo}>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium">
+                        {titulo}
+                      </CardTitle>
+                    </CardHeader>
 
-                  <CardContent>
-                    <p className="text-3xl font-bold">
-                      {valor}
-                    </p>
-                  </CardContent>
-                </Card>
-              ))}
+                    <CardContent>
+                      <p className="text-3xl font-bold">
+                        {valor}
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              <p className="text-sm text-muted-foreground">
+                Total de miembros registrados: {miembros.length}
+              </p>
             </div>
           )}
 
-          {/* MIEMBROS: registro y búsqueda */}
+          {/* MIEMBROS: registrar, buscar y editar */}
           {seccion === "miembros" && !cargando && !error && (
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-4">
-                <CardTitle>Miembros registrados</CardTitle>
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between gap-4">
+                  <CardTitle>Miembros registrados</CardTitle>
 
-                <Button
-                  onClick={() => {
-                    setMostrarFormulario(!mostrarFormulario)
-                    setErrorRegistro("")
-                    setMensajeRegistro("")
-                  }}
-                >
-                  {mostrarFormulario
-                    ? "Cancelar"
-                    : "Registrar miembro"}
-                </Button>
-              </CardHeader>
-
-              <CardContent className="space-y-4">
-                {/* Mensaje de registro exitoso */}
-                {mensajeRegistro && (
-                  <p className="text-sm text-green-600">
-                    {mensajeRegistro}
-                  </p>
-                )}
-
-                {/* Formulario para nuevos miembros */}
-                {mostrarFormulario && (
-                  <form
-                    onSubmit={guardarMiembro}
-                    className="space-y-3 rounded-lg border p-4"
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setMostrarFormulario(!mostrarFormulario)
+                      setErrorRegistro("")
+                      setMensajeRegistro("")
+                    }}
                   >
-                    <h3 className="font-semibold">
-                      Nuevo miembro
-                    </h3>
+                    {mostrarFormulario
+                      ? "Cancelar"
+                      : "Registrar miembro"}
+                  </Button>
+                </CardHeader>
 
-                    <Input
-                      placeholder="Nombre completo"
-                      value={nombreNuevo}
-                      onChange={(e) =>
-                        setNombreNuevo(e.target.value)
-                      }
-                      required
-                    />
-
-                    <Input
-                      placeholder="Teléfono"
-                      value={telefonoNuevo}
-                      onChange={(e) =>
-                        setTelefonoNuevo(e.target.value)
-                      }
-                    />
-
-                    {errorRegistro && (
-                      <p className="text-sm text-red-600">
-                        {errorRegistro}
-                      </p>
-                    )}
-
-                    <Button
-                      type="submit"
-                      disabled={guardando}
-                    >
-                      {guardando
-                        ? "Guardando..."
-                        : "Guardar miembro"}
-                    </Button>
-                  </form>
-                )}
-
-                {/* Buscador de miembros */}
-                <Input
-                  placeholder="Buscar por nombre o teléfono..."
-                  value={busqueda}
-                  onChange={(e) => setBusqueda(e.target.value)}
-                />
-
-                {/* Tabla de miembros desde DynamoDB */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="p-3">Nombre</th>
-                        <th className="p-3">Teléfono</th>
-                        <th className="p-3">Vencimiento</th>
-                        <th className="p-3">Estado</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {miembrosFiltrados.map((m) => (
-                        <tr
-                          key={m.memberId}
-                          className="border-b"
-                        >
-                          <td className="p-3">
-                            {m.fullName}
-                          </td>
-
-                          <td className="p-3">
-                            {m.phone || "Sin teléfono"}
-                          </td>
-
-                          <td className="p-3">
-                            {mostrarFecha(m.membershipEndDate)}
-                          </td>
-
-                          <td className="p-3">
-                            <Badge
-                              variant={
-                                m.isActive
-                                  ? "default"
-                                  : "secondary"
-                              }
-                            >
-                              {m.isActive
-                                ? "Activo"
-                                : "Desactivado"}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {!miembrosFiltrados.length && (
-                    <p className="p-4 text-center text-muted-foreground">
-                      No se encontraron miembros.
+                <CardContent className="space-y-4">
+                  {/* Mensaje de registro */}
+                  {mensajeRegistro && (
+                    <p className="text-sm text-green-600">
+                      {mensajeRegistro}
                     </p>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+
+                  {/* Formulario de registro */}
+                  {mostrarFormulario && (
+                    <form
+                      onSubmit={guardarMiembro}
+                      className="space-y-3 rounded-lg border p-4"
+                    >
+                      <h3 className="font-semibold">
+                        Nuevo miembro
+                      </h3>
+
+                      <Input
+                        placeholder="Nombre completo"
+                        value={nombreNuevo}
+                        onChange={(e) =>
+                          setNombreNuevo(e.target.value)
+                        }
+                        required
+                      />
+
+                      <Input
+                        placeholder="Teléfono"
+                        value={telefonoNuevo}
+                        onChange={(e) =>
+                          setTelefonoNuevo(e.target.value)
+                        }
+                      />
+
+                      {errorRegistro && (
+                        <p className="text-sm text-red-600">
+                          {errorRegistro}
+                        </p>
+                      )}
+
+                      <Button
+                        type="submit"
+                        disabled={guardando}
+                      >
+                        {guardando
+                          ? "Guardando..."
+                          : "Guardar miembro"}
+                      </Button>
+                    </form>
+                  )}
+
+                  {/* Buscar miembros */}
+                  <Input
+                    placeholder="Buscar por nombre o teléfono..."
+                    value={busqueda}
+                    onChange={(e) => setBusqueda(e.target.value)}
+                  />
+
+                  {/* Tabla de miembros */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="p-3">Nombre</th>
+                          <th className="p-3">Teléfono</th>
+                          <th className="p-3">Vencimiento</th>
+                          <th className="p-3">Estado</th>
+                          <th className="p-3">Acciones</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {miembrosFiltrados.map((miembro) => (
+                          <tr
+                            key={miembro.memberId}
+                            className="border-b"
+                          >
+                            <td className="p-3">
+                              {miembro.fullName}
+                            </td>
+
+                            <td className="p-3">
+                              {miembro.phone || "Sin teléfono"}
+                            </td>
+
+                            <td className="p-3">
+                              {mostrarFecha(
+                                miembro.membershipEndDate
+                              )}
+                            </td>
+
+                            <td className="p-3">
+                              <EstadoMembresia
+                                miembro={miembro}
+                              />
+                            </td>
+
+                            <td className="p-3">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setMiembroEditar(miembro)
+                                  setMostrarFormulario(false)
+                                }}
+                              >
+                                Editar
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    {!miembrosFiltrados.length && (
+                      <p className="p-4 text-center text-muted-foreground">
+                        No se encontraron miembros.
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Formulario para editar miembros */}
+              {miembroEditar && (
+                <EditMemberForm
+                  key={miembroEditar.memberId}
+                  miembro={miembroEditar}
+                  onCancelar={() => setMiembroEditar(null)}
+                  onActualizar={setMiembros}
+                />
+              )}
+            </div>
           )}
 
-          {/* PAGOS: registrar y consultar historial */}
+          {/* PAGOS: inscripción, mensualidad e historial */}
           {seccion === "pagos" && !cargando && !error && (
             <PaymentsPanel
               miembros={miembros}
@@ -378,10 +416,16 @@ function App() {
             />
           )}
 
-          {/* INGRESOS: acceso exclusivo del gerente */}
-          {seccion === "ingresos" && !cargando && (
+          {/* INGRESOS Y PRECIOS: solo para el gerente */}
+          {seccion === "ingresos" && !cargando && !error && (
             esGerente ? (
-              <IncomePanel />
+              <div className="space-y-6">
+                {/* Estadísticas y gráficas de ingresos */}
+                <IncomePanel />
+
+                {/* Precios oficiales almacenados en DynamoDB */}
+                <PricingPanel />
+              </div>
             ) : (
               <Card>
                 <CardContent className="p-6">

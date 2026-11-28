@@ -2,9 +2,10 @@
 import { useEffect, useState } from "react"
 
 import {
-  registrarPago,
-  obtenerMiembros,
+  obtenerCotizacionPago,
   obtenerHistorialPagos,
+  obtenerMiembros,
+  registrarPago,
 } from "@/api"
 
 import {
@@ -14,33 +15,13 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 
-import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { SearchIcon } from "lucide-react"
+import { obtenerEstadoMembresia } from "@/lib/membership-status"
 
-// Convertir pesos a centavos sin errores de decimales
-function convertirACentavos(texto) {
-  const valor = texto.trim()
-
-  if (!/^\d+([.,]\d{1,2})?$/.test(valor)) return null
-
-  const [pesos, centavos = ""] = valor.replace(",", ".").split(".")
-  const resultado = Number(pesos) * 100 + Number(centavos.padEnd(2, "0"))
-
-  return Number.isSafeInteger(resultado) && resultado > 0
-    ? resultado
-    : null
-}
-
-// Formatear fechas de DynamoDB
-function mostrarFecha(fecha) {
-  if (!fecha) return "Sin membresía"
-  const [anio, mes, dia] = fecha.slice(0, 10).split("-")
-  return `${dia}/${mes}/${anio}`
-}
-
-// Formatear cantidades en pesos mexicanos
+// Convertir centavos a pesos mexicanos
 function mostrarMonto(centavos) {
   return (centavos / 100).toLocaleString("es-MX", {
     style: "currency",
@@ -48,181 +29,262 @@ function mostrarMonto(centavos) {
   })
 }
 
-// Pantalla de pagos e historial
+// Mostrar fechas de DynamoDB
+function mostrarFecha(fecha) {
+  if (!fecha) return "Sin membresía"
+
+  const [anio, mes, dia] = fecha.slice(0, 10).split("-")
+  return `${dia}/${mes}/${anio}`
+}
+
+// Validar que AWS haya enviado un desglose correcto
+function validarCotizacion(datos) {
+  const campos = [
+    datos.enrollmentFeeInCents,
+    datos.membershipFeeInCents,
+    datos.totalInCents,
+  ]
+
+  if (
+    !campos.every((valor) =>
+      Number.isSafeInteger(valor) && valor >= 0
+    ) ||
+    datos.membershipFeeInCents <= 0 ||
+    datos.totalInCents !==
+      datos.enrollmentFeeInCents + datos.membershipFeeInCents
+  ) {
+    throw new Error("AWS devolvió una cotización inválida")
+  }
+
+  return datos
+}
+
+// Pantalla de cobros e historial de GymControl
 export function PaymentsPanel({ miembros, onActualizarMiembros }) {
   const [busqueda, setBusqueda] = useState("")
-  const [miembroSeleccionado, setMiembroSeleccionado] = useState(null)
-  const [monto, setMonto] = useState("")
-  const [guardando, setGuardando] = useState(false)
-  const [error, setError] = useState("")
-  const [resultado, setResultado] = useState(null)
+  const [seleccionado, setSeleccionado] = useState(null)
 
-  // Estado del historial
+  // Cotización oficial
+  const [cotizacion, setCotizacion] = useState(null)
+  const [cargandoCotizacion, setCargandoCotizacion] = useState(false)
+  const [errorCotizacion, setErrorCotizacion] = useState("")
+
+  // Historial de pagos
   const [historial, setHistorial] = useState([])
   const [cargandoHistorial, setCargandoHistorial] = useState(false)
   const [errorHistorial, setErrorHistorial] = useState("")
+
+  // Registro del pago
+  const [guardando, setGuardando] = useState(false)
+  const [resultado, setResultado] = useState(null)
+  const [errorPago, setErrorPago] = useState("")
   const [aviso, setAviso] = useState("")
 
-  // Buscar por nombre o teléfono
+  // Buscar todos los miembros, independientemente de isActive
   const coincidencias = busqueda.trim()
     ? miembros
-        .filter(
-          (m) =>
-            m.isActive === true &&
-            (
-              (m.fullName || "")
-                .toLowerCase()
-                .includes(busqueda.trim().toLowerCase()) ||
-              (m.phone || "").includes(busqueda.trim())
-            )
-        )
+        .filter((miembro) => {
+          const texto = busqueda.trim().toLowerCase()
+
+          return (
+            (miembro.fullName || "")
+              .toLowerCase()
+              .includes(texto) ||
+            (miembro.phone || "").includes(texto)
+          )
+        })
         .slice(0, 8)
     : []
 
-  // Consultar historial cuando cambia el miembro seleccionado
+  // Consultar precios e historial al seleccionar un miembro
   useEffect(() => {
-    if (!miembroSeleccionado) {
+    if (!seleccionado) {
+      setCotizacion(null)
       setHistorial([])
+      setErrorCotizacion("")
       setErrorHistorial("")
-      setCargandoHistorial(false)
       return
     }
 
     let cancelado = false
 
-    async function cargarHistorial() {
+    async function cargarDatos() {
+      setCargandoCotizacion(true)
       setCargandoHistorial(true)
-      setErrorHistorial("")
+      setCotizacion(null)
       setHistorial([])
+      setErrorCotizacion("")
+      setErrorHistorial("")
 
-      try {
-        const datos = await obtenerHistorialPagos(
-          miembroSeleccionado.memberId
-        )
+      // Consultar ambas funciones Lambda
+      const [precios, pagos] = await Promise.allSettled([
+        obtenerCotizacionPago(seleccionado.memberId),
+        obtenerHistorialPagos(seleccionado.memberId),
+      ])
 
-        if (!cancelado) setHistorial(datos)
-      } catch (err) {
-        if (!cancelado) setErrorHistorial(err.message)
-      } finally {
-        if (!cancelado) setCargandoHistorial(false)
+      if (cancelado) return
+
+      if (precios.status === "fulfilled") {
+        try {
+          setCotizacion(validarCotizacion(precios.value))
+        } catch (err) {
+          setErrorCotizacion(err.message)
+        }
+      } else {
+        setErrorCotizacion(precios.reason.message)
       }
+
+      if (pagos.status === "fulfilled") {
+        setHistorial(pagos.value)
+      } else {
+        setErrorHistorial(pagos.reason.message)
+      }
+
+      setCargandoCotizacion(false)
+      setCargandoHistorial(false)
     }
 
-    cargarHistorial()
+    cargarDatos()
 
     return () => {
       cancelado = true
     }
-  }, [miembroSeleccionado?.memberId])
+  }, [seleccionado?.memberId])
 
-  // Seleccionar miembro
+  // Elegir un miembro de la búsqueda
   function seleccionarMiembro(miembro) {
-    setMiembroSeleccionado(miembro)
+    setSeleccionado(miembro)
     setBusqueda("")
-    setError("")
+    setCotizacion(null)
     setResultado(null)
+    setErrorPago("")
     setAviso("")
   }
 
-  // Registrar pago mediante Lambda
-  async function guardarPago(evento) {
+  // Registrar pago utilizando el importe oficial
+  async function confirmarPago(evento) {
     evento.preventDefault()
 
-    const amountInCents = convertirACentavos(monto)
-
-    if (!miembroSeleccionado || amountInCents === null) {
-      setError("Selecciona un miembro e introduce un monto válido.")
-      return
-    }
+    if (!seleccionado || !cotizacion || guardando) return
 
     setGuardando(true)
-    setError("")
+    setErrorPago("")
     setResultado(null)
     setAviso("")
 
-    try {
-      // Identificador único de la solicitud
-      const requestId = crypto.randomUUID()
+    const memberId = seleccionado.memberId
+    const requestId = crypto.randomUUID()
 
+    try {
+      // Lambda vuelve a validar los precios en DynamoDB
       const pago = await registrarPago(
-        miembroSeleccionado.memberId,
-        amountInCents,
+        memberId,
+        cotizacion.totalInCents,
         requestId
       )
 
-      setResultado({
-        ...pago,
-        monto: amountInCents,
-      })
+      setResultado(pago)
 
-      setMonto("")
+      // Evitar utilizar una cotización anterior
+      setCotizacion(null)
+      setCargandoCotizacion(true)
 
-      // Refrescar miembros e historial después del pago
-      const resultados = await Promise.allSettled([
+      // Actualizar precios, historial y miembros
+      const [precios, pagos, lista] = await Promise.allSettled([
+        obtenerCotizacionPago(memberId),
+        obtenerHistorialPagos(memberId),
         obtenerMiembros(),
-        obtenerHistorialPagos(miembroSeleccionado.memberId),
       ])
 
-      if (resultados[0].status === "fulfilled") {
-        const datos = resultados[0].value
-        onActualizarMiembros(datos)
+      if (precios.status === "fulfilled") {
+        try {
+          setCotizacion(validarCotizacion(precios.value))
+          setErrorCotizacion("")
+        } catch (err) {
+          setErrorCotizacion(err.message)
+        }
+      } else {
+        setErrorCotizacion(precios.reason.message)
+      }
 
-        const actualizado = datos.find(
-          (m) => m.memberId === miembroSeleccionado.memberId
+      if (pagos.status === "fulfilled") {
+        setHistorial(pagos.value)
+        setErrorHistorial("")
+      } else {
+        setErrorHistorial(pagos.reason.message)
+      }
+
+      if (lista.status === "fulfilled") {
+        onActualizarMiembros(lista.value)
+
+        const miembroActualizado = lista.value.find(
+          (m) => m.memberId === memberId
         )
 
-        if (actualizado) setMiembroSeleccionado(actualizado)
+        if (miembroActualizado) {
+          setSeleccionado(miembroActualizado)
+        }
       }
 
-      if (resultados[1].status === "fulfilled") {
-        setHistorial(resultados[1].value)
-        setErrorHistorial("")
-      }
-
-      if (resultados.some((r) => r.status === "rejected")) {
+      if (
+        precios.status === "rejected" ||
+        pagos.status === "rejected" ||
+        lista.status === "rejected"
+      ) {
         setAviso(
-          "El pago se registró, pero algunos datos no se actualizaron. Recarga la página."
+          "Pago registrado, pero no fue posible actualizar todos los datos."
         )
       }
     } catch (err) {
-      setError(
-        `${err.message}. Verifica el historial antes de intentar nuevamente.`
+      // No repetir automáticamente un cobro cuyo resultado sea incierto
+      setErrorPago(
+        `${err.message}. Comprueba el historial antes de intentar otro pago.`
       )
+      setCotizacion(null)
     } finally {
       setGuardando(false)
+      setCargandoCotizacion(false)
     }
   }
 
   return (
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Formulario para cobrar membresías */}
+        {/* Formulario de cobro */}
         <Card>
           <CardHeader>
             <CardTitle>Registrar pago</CardTitle>
           </CardHeader>
 
           <CardContent>
-            <form onSubmit={guardarPago} className="space-y-4">
+            <form onSubmit={confirmarPago} className="space-y-5">
+              {/* Buscar miembro */}
               <div className="space-y-2">
                 <label className="text-sm font-medium">
                   Buscar miembro
                 </label>
 
-                {miembroSeleccionado ? (
+                {seleccionado ? (
                   <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-                    <div>
+                    <div className="space-y-1">
                       <p className="font-medium">
-                        {miembroSeleccionado.fullName}
+                        {seleccionado.fullName}
                       </p>
+
                       <p className="text-sm text-muted-foreground">
-                        {miembroSeleccionado.phone || "Sin teléfono"}
+                        {seleccionado.phone || "Sin teléfono"}
                       </p>
+
                       <p className="text-xs text-muted-foreground">
-                        Vencimiento: {mostrarFecha(
-                          miembroSeleccionado.membershipEndDate
+                        Vencimiento actual:{" "}
+                        {mostrarFecha(
+                          seleccionado.membershipEndDate
                         )}
                       </p>
+
+                      <Badge variant="secondary">
+                        {obtenerEstadoMembresia(seleccionado)}
+                      </Badge>
                     </div>
 
                     <Button
@@ -230,8 +292,9 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
                       variant="outline"
                       disabled={guardando}
                       onClick={() => {
-                        setMiembroSeleccionado(null)
+                        setSeleccionado(null)
                         setResultado(null)
+                        setErrorPago("")
                         setAviso("")
                       }}
                     >
@@ -262,20 +325,22 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
                               onClick={() => seleccionarMiembro(m)}
                             >
                               <div>
-                                <p className="font-medium">{m.fullName}</p>
+                                <p className="font-medium">
+                                  {m.fullName}
+                                </p>
                                 <p className="text-xs text-muted-foreground">
                                   {m.phone || "Sin teléfono"}
                                 </p>
                               </div>
 
                               <Badge variant="secondary">
-                                {mostrarFecha(m.membershipEndDate)}
+                                {obtenerEstadoMembresia(m)}
                               </Badge>
                             </button>
                           ))
                         ) : (
                           <p className="p-3 text-sm text-muted-foreground">
-                            No se encontraron miembros activos.
+                            No se encontraron miembros.
                           </p>
                         )}
                       </div>
@@ -284,30 +349,84 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
                 )}
               </div>
 
-              <div className="space-y-2">
-                <label className="text-sm font-medium">
-                  Monto (MXN)
-                </label>
+              {/* Desglose de precios consultados desde AWS */}
+              {seleccionado && (
+                <div className="space-y-3 rounded-lg border p-4">
+                  <h3 className="font-semibold">
+                    Desglose del cobro
+                  </h3>
 
-                <Input
-                  placeholder="Ejemplo: 500.00"
-                  value={monto}
-                  onChange={(e) => setMonto(e.target.value)}
-                  inputMode="decimal"
-                  required
-                />
-              </div>
+                  {cargandoCotizacion && (
+                    <p className="text-sm text-muted-foreground">
+                      Consultando precios en AWS...
+                    </p>
+                  )}
 
-              {error && (
-                <p className="text-sm text-red-600">{error}</p>
+                  {errorCotizacion && (
+                    <p className="text-sm text-red-600">
+                      {errorCotizacion}
+                    </p>
+                  )}
+
+                  {cotizacion && (
+                    <>
+                      <Badge variant="secondary">
+                        {cotizacion.paymentType === "FIRST_PAYMENT"
+                          ? "Primer pago"
+                          : "Renovación"}
+                      </Badge>
+
+                      <div className="flex justify-between text-sm">
+                        <span>Inscripción</span>
+                        <span>
+                          {mostrarMonto(
+                            cotizacion.enrollmentFeeInCents
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between text-sm">
+                        <span>Mensualidad (30 días)</span>
+                        <span>
+                          {mostrarMonto(
+                            cotizacion.membershipFeeInCents
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between border-t pt-3 font-bold">
+                        <span>Total a cobrar</span>
+                        <span className="text-xl">
+                          {mostrarMonto(
+                            cotizacion.totalInCents
+                          )}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {errorPago && (
+                <p className="text-sm text-red-600">
+                  {errorPago}
+                </p>
               )}
 
               <Button
                 type="submit"
                 className="w-full"
-                disabled={guardando || !miembroSeleccionado}
+                disabled={
+                  guardando ||
+                  cargandoCotizacion ||
+                  !seleccionado ||
+                  !cotizacion ||
+                  Boolean(errorPago)
+                }
               >
-                {guardando ? "Registrando..." : "Confirmar pago"}
+                {guardando
+                  ? "Registrando pago..."
+                  : "Confirmar pago"}
               </Button>
             </form>
           </CardContent>
@@ -326,21 +445,46 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
                   Pago registrado correctamente
                 </p>
 
-                <p>Monto: {mostrarMonto(resultado.monto)}</p>
-                <p>Inicio: {mostrarFecha(resultado.nuevoInicio)}</p>
-                <p>Vencimiento: {mostrarFecha(resultado.nuevoFin)}</p>
+                <p>
+                  Inscripción:{" "}
+                  {mostrarMonto(
+                    resultado.enrollmentFeeInCents ?? 0
+                  )}
+                </p>
+
+                <p>
+                  Mensualidad:{" "}
+                  {mostrarMonto(
+                    resultado.membershipFeeInCents ?? 0
+                  )}
+                </p>
+
+                <p className="font-bold">
+                  Total:{" "}
+                  {mostrarMonto(resultado.amountInCents)}
+                </p>
+
+                <p>
+                  Inicio: {mostrarFecha(resultado.nuevoInicio)}
+                </p>
+
+                <p>
+                  Vencimiento: {mostrarFecha(resultado.nuevoFin)}
+                </p>
 
                 <p className="break-all text-xs text-muted-foreground">
-                  ID: {resultado.paymentId}
+                  ID de pago: {resultado.paymentId}
                 </p>
 
                 {aviso && (
-                  <p className="text-sm text-amber-600">{aviso}</p>
+                  <p className="text-sm text-amber-600">
+                    {aviso}
+                  </p>
                 )}
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Aquí aparecerá la confirmación del último pago.
+                Aquí aparecerá el resultado del último pago.
               </p>
             )}
           </CardContent>
@@ -354,9 +498,9 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
         </CardHeader>
 
         <CardContent>
-          {!miembroSeleccionado ? (
+          {!seleccionado ? (
             <p className="text-sm text-muted-foreground">
-              Selecciona un miembro para consultar sus pagos anteriores.
+              Selecciona un miembro para consultar su historial.
             </p>
           ) : cargandoHistorial ? (
             <p>Consultando historial en AWS...</p>
@@ -373,7 +517,7 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b">
-                    <th className="p-3">Fecha del pago</th>
+                    <th className="p-3">Fecha</th>
                     <th className="p-3">Monto</th>
                     <th className="p-3">Inicio</th>
                     <th className="p-3">Vencimiento</th>
@@ -389,12 +533,15 @@ export function PaymentsPanel({ miembros, onActualizarMiembros }) {
                       <td className="p-3">
                         {mostrarFecha(pago.paidAt)}
                       </td>
+
                       <td className="p-3">
                         {mostrarMonto(pago.amountInCents)}
                       </td>
+
                       <td className="p-3">
                         {mostrarFecha(pago.periodStart)}
                       </td>
+
                       <td className="p-3">
                         {mostrarFecha(pago.periodEnd)}
                       </td>
